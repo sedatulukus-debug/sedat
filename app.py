@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import sys
 import json
 import uuid
 import statistics
@@ -8,11 +9,20 @@ from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import pdfplumber
 
-app = Flask(__name__)
+# PyInstaller ile derlendiyse exe dizinini, değilse script dizinini kullan
+if getattr(sys, 'frozen', False):
+    _APP_DIR  = os.path.dirname(sys.executable)
+    _TMPL_DIR = os.path.join(sys._MEIPASS, 'templates')
+    _STAT_DIR = os.path.join(sys._MEIPASS, 'static')
+    app = Flask(__name__, template_folder=_TMPL_DIR, static_folder=_STAT_DIR)
+else:
+    _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    app = Flask(__name__)
+
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 
-# ─── Knowledge base dizini ──────────────────────────────────────────────────
-KB_DIR        = os.path.join(os.path.dirname(__file__), 'knowledge_base')
+# ─── Knowledge base dizini (exe yanında, bundle içinde değil) ───────────────
+KB_DIR        = os.path.join(_APP_DIR, 'knowledge_base')
 KB_INDEX_FILE = os.path.join(KB_DIR, 'index.json')
 os.makedirs(KB_DIR, exist_ok=True)
 
