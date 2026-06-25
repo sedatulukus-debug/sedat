@@ -151,11 +151,49 @@ def detect_device_type(records):
 # ─── Soğuma başlangıcı ──────────────────────────────────────────────────────
 def find_stable_start(records, device_type):
     threshold = DEVICE_CONFIG[device_type]['cooldown_threshold']
+    # İlk 3 ardışık okuma threshold altında olduğunda stabil başlangıç say
     for i, r in enumerate(records):
         if r['temperature'] < threshold:
             return max(0, i)
     return 0
 
+
+# ─── Ölçüm sonu: cihaz dolap dışına çıkarıldı ──────────────────────────────
+def find_stable_end(records, device_type):
+    """
+    Ölçümün sonundaki 'cihaz dolap dışına çıkarıldı' periyodunu tespit eder.
+    Son okuma normal_max üstündeyse ve normal aralığa geri dönmemişse,
+    bu bölümü analiz dışı bırakır.
+    """
+    cfg = DEVICE_CONFIG[device_type]
+    temps = [r['temperature'] for r in records]
+    n = len(temps)
+
+    if n < 6:
+        return n
+
+    # Son okuma normal aralıktaysa kırpma yok
+    if temps[-1] <= cfg['normal_max']:
+        return n
+
+    # Sondan geriye doğru en son normal-aralık okumasını bul
+    last_normal_i = -1
+    for i in range(n - 1, n // 2, -1):
+        if temps[i] <= cfg['normal_max']:
+            last_normal_i = i
+            break
+
+    if last_normal_i < 0:
+        return n  # Ölçümün yarısından fazlası yüksek → kırpma yapmıyoruz
+
+    tail_len  = n - 1 - last_normal_i
+    tail_rise = temps[-1] - temps[last_normal_i]
+
+    # En az 2 okuma yüksek + anlamlı yükseliş → cihaz çıkarıldı
+    if tail_len >= 2 and tail_rise >= cfg['door_open_threshold'] * 2:
+        return last_normal_i + 1
+
+    return n
 
 # ─── Defrost döngüsü tespiti ────────────────────────────────────────────────
 # Teknik belge: defrost her 12-96 saatte bir, ort. 26 saatte
@@ -270,11 +308,14 @@ def group_episodes(records, test_fn, min_duration=2, max_gap=2):
 
 
 
-def analyze_faults(records, device_type, stable_start):
+def analyze_faults(records, device_type, stable_start, stable_end=None):
     cfg = DEVICE_CONFIG[device_type]
     faults   = []
     warnings = []
     info_events = []
+
+    if stable_end is None:
+        stable_end = len(records)
 
     if len(records) < 2:
         return faults, warnings, info_events
@@ -284,16 +325,33 @@ def analyze_faults(records, device_type, stable_start):
         info_events.append({
             'severity': 'INFO',
             'icon': '❄️',
-            'title': 'Soğuma Süreci Tamamlandı',
+            'title': 'Başlangıç Isınması Atlandı',
             'description': (
-                f"Cihaz {records[0]['temperature']}°C başlangıç sıcaklığından "
-                f"normal çalışma aralığına {stable_start * 10} dakikada ulaştı."
+                f"İlk {stable_start * 10} dakika ({stable_start} ölçüm) "
+                f"başlangıç sıcaklığı ({records[0]['temperature']}°C) nedeniyle analizden çıkarıldı. "
+                "Analiz soğutma başladığı andan itibarıyla yapıldı."
             ),
             'time': records[stable_start]['datetime_display'],
             'record_id': records[stable_start]['id'],
         })
 
-    stable = records[stable_start:]
+    # --- Cihaz çıkarılma bilgisi ---
+    if stable_end < len(records):
+        removed_count = len(records) - stable_end
+        info_events.append({
+            'severity': 'INFO',
+            'icon': '📤',
+            'title': 'Son Bölüm Analizden Çıkarıldı',
+            'description': (
+                f"Son {removed_count * 10} dakika ({removed_count} ölçüm) "
+                "cihazın dolap dışına çıkarıldığı süre olarak değerlendirildi "
+                "ve arıza analizine dahil edilmedi."
+            ),
+            'time': records[stable_end]['datetime_display'],
+            'record_id': records[stable_end]['id'],
+        })
+
+    stable = records[stable_start:stable_end]
     if not stable:
         return faults, warnings, info_events
 
@@ -510,7 +568,7 @@ def analyze_faults(records, device_type, stable_start):
     # --- Kısa döngü (short cycling) tespiti ---
     # Kompresör min 5 dk çalışmalı; 10 dk aralıklı ölçümde 1 okumadan kısa döngü anlaşılamaz
     # Ancak pik-vadi mesafesi çok kısa ise şüphelidir
-    cycle_info = analyze_cycles(records, stable_start)
+    cycle_info = analyze_cycles(stable, 0)
     if isinstance(cycle_info, dict):
         if cycle_info.get('min_cycle_min') and cycle_info['min_cycle_min'] < 20:
             warnings.append({
@@ -544,10 +602,12 @@ def analyze_faults(records, device_type, stable_start):
 
 
 # ─── İstatistikler ──────────────────────────────────────────────────────────
-def calculate_stats(records, stable_start):
+def calculate_stats(records, stable_start, stable_end=None):
+    if stable_end is None:
+        stable_end = len(records)
     all_temps    = [r['temperature'] for r in records]
-    stable_temps = [r['temperature'] for r in records[stable_start:]] or all_temps
-    cycle_info   = analyze_cycles(records, stable_start)
+    stable_temps = [r['temperature'] for r in records[stable_start:stable_end]] or all_temps
+    cycle_info   = analyze_cycles(records[stable_start:stable_end], 0)
 
     return {
         'all_min':        min(all_temps),
@@ -711,8 +771,9 @@ def analyze():
 
     device_type  = detect_device_type(records)
     stable_start = find_stable_start(records, device_type)
-    faults, warnings, info_events = analyze_faults(records, device_type, stable_start)
-    stats        = calculate_stats(records, stable_start)
+    stable_end   = find_stable_end(records, device_type)
+    faults, warnings, info_events = analyze_faults(records, device_type, stable_start, stable_end)
+    stats        = calculate_stats(records, stable_start, stable_end)
     assessment   = overall_assessment(faults, warnings, device_type, stats)
     recs         = build_recommendations(faults, warnings, device_type, stats)
 
@@ -722,6 +783,7 @@ def analyze():
         'device_type':   device_type,
         'device_config': DEVICE_CONFIG[device_type],
         'stable_start':  stable_start,
+        'stable_end':    stable_end,
         'stats':         stats,
         'faults':        faults,
         'warnings':      warnings,
