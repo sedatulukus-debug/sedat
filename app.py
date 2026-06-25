@@ -236,7 +236,40 @@ def analyze_cycles(records, stable_start):
     }
 
 
-# ─── Ana arıza analizi ──────────────────────────────────────────────────────
+# ─── Episod tespiti (ardışık ihlalleri tek olay olarak gruplar) ─────────────
+def group_episodes(records, test_fn, min_duration=2, max_gap=2):
+    """
+    test_fn(rec) → True olan ardışık kayıtları episod olarak gruplar.
+    max_gap: episod içinde kaç ardışık 'False' kayda kadar köprü kurulsun.
+    min_duration: episodun kaç kayıttan uzun olması gerektiği.
+    """
+    episodes = []
+    in_ep = False
+    ep_start = 0
+    gap = 0
+    for i, rec in enumerate(records):
+        if test_fn(rec):
+            if not in_ep:
+                in_ep = True
+                ep_start = i
+            gap = 0
+        else:
+            if in_ep:
+                gap += 1
+                if gap > max_gap:
+                    ep_end = i - gap
+                    if ep_end - ep_start + 1 >= min_duration:
+                        episodes.append((ep_start, ep_end))
+                    in_ep = False
+                    gap = 0
+    if in_ep:
+        ep_end = len(records) - 1
+        if ep_end - ep_start + 1 >= min_duration:
+            episodes.append((ep_start, ep_end))
+    return episodes
+
+
+
 def analyze_faults(records, device_type, stable_start):
     cfg = DEVICE_CONFIG[device_type]
     faults   = []
@@ -297,100 +330,126 @@ def analyze_faults(records, device_type, stable_start):
                     'value': d['peak'],
                 })
 
-    # --- Sıcaklık sınır kontrolleri ---
-    last_high_id = -99
-    last_low_id  = -99
-    last_door_id = -99
+    # --- Üst sınır ihlali — episod bazlı (ardışık ihlaller tek olay) ---
+    stable_temps = [r['temperature'] for r in stable]
+    high_eps = group_episodes(stable, lambda r: r['temperature'] > cfg['normal_max'])
+    if high_eps:
+        total_over_min = sum((e - s + 1) * 10 for s, e in high_eps)
+        peak_temp = max(
+            stable[j]['temperature']
+            for s, e in high_eps for j in range(s, e + 1)
+        )
+        s0, e0 = high_eps[0]
+        pct = round(total_over_min / (len(stable) * 10) * 100)
 
-    for i, rec in enumerate(stable):
-        temp = rec['temperature']
-        rid  = rec['id']
-        dt   = rec['datetime_display']
-
-        # Üst sınır ihlali
-        if temp > cfg['normal_max'] and (rid - last_high_id) > 3:
-            last_high_id = rid
-            title = ('Yüksek Sıcaklık Alarmı' if device_type == 'FF'
-                     else 'Dondurucu Sıcaklık Alarmı — Ürünler Tehlikede')
+        if len(high_eps) == 1:
+            dur_min = (e0 - s0 + 1) * 10
             desc = (
-                f"Sıcaklık {temp}°C — izin verilen üst sınır {cfg['normal_max']}°C aşıldı."
+                f"{stable[s0]['datetime_display']} – {stable[e0]['datetime_display']} "
+                f"arasında {dur_min} dakika boyunca sıcaklık "
+                f"{cfg['normal_max']}°C üstünde kaldı (en yüksek: {peak_temp:.1f}°C)."
             )
-            if device_type == 'FF':
-                desc += " Gıda güvenliği riski. Kontrol edin: kapı contası, fan çalışması, gaz dolumu."
-            else:
-                desc += " Donmuş ürünler çözünüyor olabilir. Gaz kaçağı veya kompresör arızası şüpheli."
-            faults.append({
-                'severity': 'CRITICAL',
-                'icon': '🔴',
-                'title': title,
-                'description': desc,
-                'time': dt,
-                'record_id': rid,
-                'value': temp,
-            })
+        else:
+            desc = (
+                f"Ölçüm süresinin %{pct}'inde ({total_over_min} dakika / "
+                f"{len(high_eps)} ayrı periyot) sıcaklık "
+                f"{cfg['normal_max']}°C üstünde seyretti (en yüksek: {peak_temp:.1f}°C). "
+                f"İlk ihlal: {stable[s0]['datetime_display']}."
+            )
+        if device_type == 'FF':
+            desc += " Kapı contası, soğutucu fanı ve gaz dolumunu kontrol edin."
+            title = 'Yüksek Sıcaklık — Gıda Güvenliği Riski'
+        else:
+            desc += " Donmuş ürünler çözünüyor olabilir; gaz kaçağı veya kompresör arızası şüpheli."
+            title = 'Dondurucu Sıcaklık Alarmı — Ürünler Tehlikede'
+        faults.append({
+            'severity': 'CRITICAL',
+            'icon': '🔴',
+            'title': title,
+            'description': desc,
+            'time': stable[s0]['datetime_display'],
+            'record_id': stable[s0]['id'],
+            'value': peak_temp,
+        })
 
-        # Alt sınır ihlali (FF için donma riski)
-        if device_type == 'FF' and temp < cfg['normal_min'] and (rid - last_low_id) > 3:
-            last_low_id = rid
+    # --- Alt sınır ihlali (FF: donma riski) — episod bazlı ---
+    if device_type == 'FF':
+        low_eps = group_episodes(stable, lambda r: r['temperature'] < cfg['normal_min'])
+        if low_eps:
+            min_temp = min(
+                stable[j]['temperature']
+                for s, e in low_eps for j in range(s, e + 1)
+            )
+            total_low_min = sum((e - s + 1) * 10 for s, e in low_eps)
+            s0, e0 = low_eps[0]
+            if len(low_eps) == 1:
+                dur = (e0 - s0 + 1) * 10
+                desc = (
+                    f"{dur} dakika boyunca donma sınırı ({cfg['normal_min']}°C) altında kaldı "
+                    f"(en düşük: {min_temp:.1f}°C). "
+                    "Termostat set değeri çok düşük veya termistor arızalı olabilir (E3)."
+                )
+            else:
+                desc = (
+                    f"{len(low_eps)} ayrı periyotta toplam {total_low_min} dakika "
+                    f"donma sınırının altında seyretti (en düşük: {min_temp:.1f}°C). "
+                    "Termostat veya E3 sensör kontrolü önerilir."
+                )
             warnings.append({
                 'severity': 'WARNING',
                 'icon': '🧊',
                 'title': 'Donma Riski',
-                'description': (
-                    f"Sıcaklık {temp}°C — donma sınırı ({cfg['normal_min']}°C) altında. "
-                    "Termostat set değeri çok düşük veya termistor arızalı olabilir (E3 kontrolü)."
-                ),
-                'time': dt,
-                'record_id': rid,
-                'value': temp,
+                'description': desc,
+                'time': stable[s0]['datetime_display'],
+                'record_id': stable[s0]['id'],
+                'value': min_temp,
             })
 
-        # Kapı açılması tespiti
-        if i > 0:
-            prev  = stable[i - 1]
-            diff  = temp - prev['temperature']
-            prev2 = stable[i - 2]['temperature'] if i >= 2 else None
+    # --- Kapı açılması — özet ---
+    door_idx = []
+    for i in range(1, len(stable)):
+        diff = stable[i]['temperature'] - stable[i - 1]['temperature']
+        if diff > cfg['door_open_threshold']:
+            if device_type == 'FRZ' and i >= 2:
+                prev_diff = stable[i - 1]['temperature'] - stable[i - 2]['temperature']
+                if prev_diff > 1.5:
+                    continue
+            door_idx.append(i)
 
-            if device_type == 'FF':
-                if diff > cfg['door_open_threshold'] and (rid - last_door_id) > 3:
-                    last_door_id = rid
-                    warnings.append({
-                        'severity': 'WARNING',
-                        'icon': '🚪',
-                        'title': 'Kapı Açılması Tespit Edildi',
-                        'description': (
-                            f"10 dakikada {diff:.1f}°C ani artış "
-                            f"({prev['temperature']}°C → {temp}°C). "
-                            "Kapı açılmış veya kapı contası sorunlu olabilir."
-                        ),
-                        'time': dt,
-                        'record_id': rid,
-                        'value': temp,
-                    })
-            else:  # FRZ
-                if diff > cfg['door_open_threshold'] and (rid - last_door_id) > 3:
-                    is_gradual = (prev2 is not None and
-                                  (prev['temperature'] - prev2) > 1.5)
-                    if not is_gradual:
-                        last_door_id = rid
-                        warnings.append({
-                            'severity': 'WARNING',
-                            'icon': '🚪',
-                            'title': 'Kapı Açılması / Ani Sıcaklık Artışı',
-                            'description': (
-                                f"10 dakikada {diff:.1f}°C ani artış "
-                                f"({prev['temperature']}°C → {temp}°C). "
-                                "Kapı açılmış veya dış ısı etkisi olabilir. "
-                                "Sürekli tekrar ediyorsa kapı contasını kontrol edin."
-                            ),
-                            'time': dt,
-                            'record_id': rid,
-                            'value': temp,
-                        })
+    if len(door_idx) == 1:
+        i = door_idx[0]
+        diff = stable[i]['temperature'] - stable[i - 1]['temperature']
+        warnings.append({
+            'severity': 'WARNING',
+            'icon': '🚪',
+            'title': 'Kapı Açılması Tespit Edildi',
+            'description': (
+                f"10 dakikada {diff:.1f}°C ani artış "
+                f"({stable[i-1]['temperature']}°C → {stable[i]['temperature']}°C). "
+                "Kapı açılmış veya kapı contası sorunlu olabilir."
+            ),
+            'time': stable[i]['datetime_display'],
+            'record_id': stable[i]['id'],
+            'value': stable[i]['temperature'],
+        })
+    elif len(door_idx) > 1:
+        diffs = [stable[i]['temperature'] - stable[i - 1]['temperature'] for i in door_idx]
+        avg_diff = statistics.mean(diffs)
+        warnings.append({
+            'severity': 'WARNING',
+            'icon': '🚪',
+            'title': f'Kapı Açılması — {len(door_idx)} Olay',
+            'description': (
+                f"Ölçüm süresi boyunca {len(door_idx)} kez ani sıcaklık artışı gözlemlendi "
+                f"(ortalama {avg_diff:.1f}°C/10 dk artış). "
+                f"İlk olay: {stable[door_idx[0]]['datetime_display']}. "
+                "Sık kapı açılması veya kapı contası sızdırmazlığı sorunlu olabilir."
+            ),
+            'time': stable[door_idx[0]]['datetime_display'],
+            'record_id': stable[door_idx[0]]['id'],
+        })
 
     # --- Evaporatör buzlanması tespiti ---
-    # Teknik belge: "-30°C civarı değerler → evap üzeri buz kaplı olabilir"
-    stable_temps = [r['temperature'] for r in stable]
     if device_type == 'FRZ':
         very_cold = [t for t in stable_temps if t < -28]
         if len(very_cold) >= 3:
