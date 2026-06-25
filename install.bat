@@ -34,10 +34,12 @@ if exist venv (
     )
 )
 
+:: pip guncelle (python -m pip kullan, dogrudan pip degil)
+venv\Scripts\python.exe -m pip install --upgrade pip --quiet 2>nul
+
 :: Paketleri kur
 echo  [2/3] Gerekli paketler yukleniyor...
-venv\Scripts\pip install --upgrade pip --quiet
-venv\Scripts\pip install flask pdfplumber --quiet
+venv\Scripts\python.exe -m pip install flask pdfplumber --quiet
 if errorlevel 1 (
     echo  HATA: Paketler yuklenemedi. Internet baglantinizi kontrol edin.
     pause
@@ -53,7 +55,7 @@ echo  ============================================
 echo   Kurulum tamamlandi^^!
 echo  ============================================
 echo.
-echo   Programi baslatmak icin start.bat dosyasini
-echo   cift tiklayin.
+echo   Programi baslatmak icin: start.bat
+echo   EXE olusturmak icin    : build.bat
 echo.
 pause
