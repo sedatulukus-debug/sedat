@@ -12,13 +12,17 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 echo  [1/3] PyInstaller yukleniyor...
-venv\Scripts\pip install pyinstaller --quiet
+venv\Scripts\python.exe -m pip install pyinstaller --quiet 2>nul
 
 echo  [2/3] EXE olusturuluyor (birkac dakika surebilir)...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
+if exist Testo174T.spec del Testo174T.spec
 
-venv\Scripts\pyinstaller ^
+:: static klasoru yoksa olustur
+if not exist static mkdir static
+
+venv\Scripts\python.exe -m PyInstaller ^
     --onefile ^
     --noconsole ^
     --name "Testo174T" ^
