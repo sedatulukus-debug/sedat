@@ -263,12 +263,39 @@
 
   .kb-loading { display: none; text-align: center; padding: 24px; color: var(--text-muted); font-size: 13px; }
 
+  /* ── Device Type Selector ────────────────────────────────────────────── */
+  .device-selector { margin-top: 22px; text-align: center; }
+  .device-selector-label { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+  .device-options { display: inline-flex; gap: 10px; }
+  .device-opt { position: relative; }
+  .device-opt input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+  .device-opt-label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 22px; border: 2px solid var(--border); border-radius: 10px;
+    cursor: pointer; transition: all .2s; background: var(--surface);
+    font-size: 14px; font-weight: 600; color: var(--text-muted);
+    user-select: none;
+  }
+  .device-opt input:checked + .device-opt-label {
+    border-color: var(--accent); background: rgba(99,102,241,.09); color: var(--accent);
+  }
+  .device-opt-label:hover { border-color: var(--accent); color: var(--accent); }
+  .device-opt-icon { font-size: 20px; }
+
+  /* ── Rec source attribution ──────────────────────────────────────────── */
+  .rec-source {
+    display: inline-block; margin-top: 6px;
+    font-size: 11px; color: var(--kb); font-style: italic;
+  }
+
   @media (max-width: 600px) {
     header, .tab-bar { padding-left: 16px; padding-right: 16px; }
     .container { padding: 16px; }
     .upload-zone { padding: 36px 16px; }
     .chart-wrap { height: 220px; }
     .tab-btn { padding: 12px 14px; font-size: 13px; }
+    .device-options { flex-direction: column; }
+    .device-opt-label { justify-content: center; }
   }
 </style>
 </head>
@@ -298,7 +325,27 @@
       <div class="icon">📄</div>
       <h2>Testo 174T PDF Raporu Yükleyin</h2>
       <p>Cihazdan dışa aktarılan PDF dosyasını sürükleyin veya seçin</p>
-      <label class="btn-upload" for="file-input">Dosya Seç</label>
+
+      <!-- Cihaz türü seçimi -->
+      <div class="device-selector">
+        <div class="device-selector-label">Ölçüm Yapılan Bölme</div>
+        <div class="device-options">
+          <label class="device-opt">
+            <input type="radio" name="device-type" value="FF" id="opt-ff" checked>
+            <span class="device-opt-label">
+              <span class="device-opt-icon">🧊</span>Soğutucu Bölme
+            </span>
+          </label>
+          <label class="device-opt">
+            <input type="radio" name="device-type" value="FRZ" id="opt-frz">
+            <span class="device-opt-label">
+              <span class="device-opt-icon">❄️</span>Dondurucu Bölme
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <label class="btn-upload" for="file-input" style="margin-top:22px">Dosya Seç</label>
       <input type="file" id="file-input" class="file-input-hidden" accept=".pdf">
     </div>
   </div>
@@ -351,13 +398,9 @@
       <div class="rec-list" id="recs-list"></div>
     </div>
 
+    <!-- KB içeriği artık Teşhis Önerileri adımları içine gömülüdür -->
     <div id="kb-refs-wrapper" style="display:none">
-      <div class="section-divider"></div>
-      <div class="kb-refs-section">
-        <h3>📖 Teknik Doküman Referansları</h3>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Yüklü teknik belgelerden tespit edilen arızayla ilgili bölümler:</p>
-        <div id="kb-refs-list"></div>
-      </div>
+      <div id="kb-refs-list"></div>
     </div>
 
   </div><!-- /results -->
@@ -372,7 +415,7 @@
     <h2>📚 Teknik Doküman Yönetimi</h2>
     <p>
       Servis kılavuzları, hata kodu listeleri veya çalışma prensibi belgelerini buraya yükleyin.<br>
-      Yüklenen belgeler, ölçüm analizi sırasında otomatik olarak referans olarak kullanılır.
+      Yüklenen belgeler analizi yönlendirir — teşhis adımları doğrudan bu belgelerden türetilir.
     </p>
   </div>
 
@@ -431,6 +474,8 @@ $('btn-reset').addEventListener('click', () => {
 async function uploadFile(file) {
   const fd = new FormData();
   fd.append('file', file);
+  const selType = document.querySelector('input[name="device-type"]:checked');
+  if (selType) fd.append('device_type', selType.value);
   $('upload-section').style.display = 'none';
   $('loading').style.display = 'block';
   $('results').style.display = 'none';
@@ -574,6 +619,7 @@ function renderRecommendations(recs) {
           <div class="rec-body">
             <div class="rec-text">${r.text}</div>
             ${r.code && r.code !== '—' ? `<span class="rec-code">Hata Kodu: ${r.code}</span>` : ''}
+            ${r.source ? `<span class="rec-source">📄 ${r.source}</span>` : ''}
           </div>
         </div>`).join('')
     : '<div class="empty-state">Öneri oluşturulamadı.</div>';

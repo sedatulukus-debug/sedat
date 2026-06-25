@@ -34,7 +34,7 @@ os.makedirs(KB_DIR, exist_ok=True)
 # Defrost sıklığı: 12-96 saat arası, ortalama 26 saat
 DEVICE_CONFIG = {
     'FF': {
-        'name': 'Buzdolabı / Soğutucu (Fresh Food)',
+        'name': 'Soğutucu Bölme',
         'normal_min': 0.0,
         'normal_max': 8.0,
         'ideal_min': 2.0,
@@ -48,7 +48,7 @@ DEVICE_CONFIG = {
         'bg_color': 'rgba(52, 152, 219, 0.15)',
     },
     'FRZ': {
-        'name': 'Derin Dondurucu (Freezer)',
+        'name': 'Dondurucu Bölme',
         'normal_min': -25.0,
         'normal_max': -12.0,
         'ideal_min': -22.0,
@@ -682,6 +682,59 @@ def overall_assessment(faults, warnings, device_type, stats):
     }
 
 
+# ─── KB dokümanlarından tanısal adımlar çıkar ───────────────────────────────
+def kb_driven_steps(faults, warnings, device_type):
+    """KB dokümanlarındaki ilgili tanı prosedürlerini recommendations içine gömer."""
+    index = kb_load_index()
+    if not index:
+        return []
+
+    search_terms = []
+    for ev in faults + warnings:
+        title = ev.get('title', '')
+        for key, terms in _FAULT_TERMS.items():
+            if key in title:
+                search_terms.extend(terms[:2])
+    if device_type == 'FRZ':
+        search_terms.extend(['dondurucu', 'freezer', 'kompresör'])
+    else:
+        search_terms.extend(['soğutucu', 'buzdolabı', 'kompresör'])
+    search_terms = list(dict.fromkeys(search_terms))
+
+    steps = []
+    seen = set()
+    for meta in index:
+        doc_file = os.path.join(KB_DIR, meta['id'] + '.json')
+        if not os.path.exists(doc_file):
+            continue
+        with open(doc_file, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+        text = doc.get('text', '')
+        text_lower = text.lower()
+
+        for term in search_terms:
+            idx = 0
+            while idx < len(text_lower) and len(steps) < 4:
+                pos = text_lower.find(term.lower(), idx)
+                if pos < 0:
+                    break
+                line_start = text.rfind('\n', 0, max(0, pos - 10))
+                line_start = line_start + 1 if line_start >= 0 else max(0, pos - 100)
+                line_end = text.find('\n\n', pos)
+                line_end = line_end if 0 < line_end < pos + 350 else min(len(text), pos + 350)
+                snippet = text[line_start:line_end].strip()
+                if len(snippet) > 50 and snippet not in seen:
+                    seen.add(snippet)
+                    steps.append({'text': snippet[:350], 'source': meta['name']})
+                idx = pos + max(1, len(term))
+            if len(steps) >= 4:
+                break
+        if len(steps) >= 4:
+            break
+
+    return steps[:4]
+
+
 # ─── Teşhis önerileri ───────────────────────────────────────────────────────
 def build_recommendations(faults, warnings, device_type, stats):
     recs = []
@@ -756,6 +809,16 @@ def build_recommendations(faults, warnings, device_type, stats):
             'text': 'Olağandışı durum tespit edilmedi. '
                     'Düzenli bakım: kondanser temizliği (6 ayda 1), kapı contası kontrolü.',
             'code': '—',
+        })
+
+    # Yüklü teknik belgelerden gelen tanısal adımlar (REFERANS değil — analizi yönlendiren)
+    kb_steps = kb_driven_steps(faults, warnings, device_type)
+    for ks in kb_steps:
+        recs.append({
+            'step': len(recs) + 1,
+            'text': ks['text'],
+            'code': '—',
+            'source': ks['source'],
         })
 
     return recs
@@ -882,14 +945,15 @@ def analyze():
     if not records:
         return jsonify({'error': 'PDF içinde ölçüm verisi bulunamadı'}), 400
 
-    device_type  = detect_device_type(records)
+    device_type_param = request.form.get('device_type', '').strip().upper()
+    device_type  = device_type_param if device_type_param in DEVICE_CONFIG else detect_device_type(records)
     stable_start = find_stable_start(records, device_type)
     stable_end   = find_stable_end(records, device_type)
     faults, warnings, info_events = analyze_faults(records, device_type, stable_start, stable_end)
     stats        = calculate_stats(records, stable_start, stable_end)
     assessment   = overall_assessment(faults, warnings, device_type, stats)
     recs         = build_recommendations(faults, warnings, device_type, stats)
-    kb_refs      = kb_search(faults, warnings, device_type)
+    kb_refs      = []  # KB içeriği artık recommendations içine gömülüdür
 
     return jsonify({
         'header':          header_info,
