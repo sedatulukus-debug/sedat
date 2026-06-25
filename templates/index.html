@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Testo 174T — Ölçüm Analiz Sistemi</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #222535;
+    --border: #2e3248;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --accent: #6366f1;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --crit: #ef4444;
+    --info: #3b82f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  header .logo { font-size: 24px; }
+  header h1 { font-size: 18px; font-weight: 700; color: var(--text); }
+  header p { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+  .container { max-width: 1280px; margin: 0 auto; padding: 28px 24px; }
+
+  /* Upload Zone */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 16px;
+    padding: 56px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .2s;
+    background: var(--surface);
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(99,102,241,.08);
+  }
+  .upload-zone .icon { font-size: 48px; margin-bottom: 16px; }
+  .upload-zone h2 { font-size: 20px; margin-bottom: 8px; }
+  .upload-zone p { color: var(--text-muted); font-size: 14px; }
+  .upload-zone .btn-upload {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 28px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+  }
+  #file-input { display: none; }
+
+  /* Loading */
+  .loading {
+    display: none;
+    text-align: center;
+    padding: 48px;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Results */
+  #results { display: none; }
+
+  /* Assessment Banner */
+  .assessment {
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border: 1px solid transparent;
+  }
+  .assessment.OK   { background: rgba(34,197,94,.1); border-color: rgba(34,197,94,.3); }
+  .assessment.WARNING { background: rgba(245,158,11,.1); border-color: rgba(245,158,11,.3); }
+  .assessment.CRITICAL { background: rgba(239,68,68,.1); border-color: rgba(239,68,68,.3); }
+  .assessment .badge {
+    font-size: 12px; font-weight: 700; letter-spacing: .08em;
+    padding: 4px 12px; border-radius: 6px;
+    white-space: nowrap;
+  }
+  .assessment.OK .badge { background: var(--ok); color: #fff; }
+  .assessment.WARNING .badge { background: var(--warn); color: #000; }
+  .assessment.CRITICAL .badge { background: var(--crit); color: #fff; }
+  .assessment .msg { font-size: 15px; color: var(--text); }
+
+  /* Header Info */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .info-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .info-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
+  .info-card .value { font-size: 15px; font-weight: 600; }
+
+  /* Stats */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    text-align: center;
+  }
+  .stat-card .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+  .stat-card .stat-value { font-size: 26px; font-weight: 700; }
+  .stat-card .stat-unit { font-size: 13px; color: var(--text-muted); }
+
+  /* Chart */
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+  .chart-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-muted); }
+  .chart-wrap { position: relative; height: 320px; }
+
+  /* Events */
+  .events-section { margin-bottom: 24px; }
+  .events-section h3 { font-size: 16px; font-weight: 700; margin-bottom: 14px; }
+  .event-list { display: flex; flex-direction: column; gap: 10px; }
+  .event-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .event-item.CRITICAL { border-left: 4px solid var(--crit); }
+  .event-item.WARNING  { border-left: 4px solid var(--warn); }
+  .event-item.INFO     { border-left: 4px solid var(--info); }
+  .event-icon { font-size: 20px; flex-shrink: 0; line-height: 1.3; }
+  .event-body .event-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+  .event-body .event-desc  { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+  .event-body .event-meta  { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+  .event-badge {
+    margin-left: auto; flex-shrink: 0;
+    font-size: 10px; font-weight: 700; padding: 3px 10px;
+    border-radius: 5px; align-self: flex-start; letter-spacing: .06em;
+  }
+  .event-badge.CRITICAL { background: rgba(239,68,68,.2); color: #ef4444; }
+  .event-badge.WARNING  { background: rgba(245,158,11,.2); color: #f59e0b; }
+  .event-badge.INFO     { background: rgba(59,130,246,.2); color: #3b82f6; }
+
+  .empty-state {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+
+  /* Reset button */
+  .btn-reset {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); padding: 9px 20px; border-radius: 8px;
+    font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 24px;
+    transition: background .15s;
+  }
+  .btn-reset:hover { background: var(--border); }
+
+  .section-divider { height: 1px; background: var(--border); margin: 28px 0; }
+
+  /* Normal band legend */
+  .legend-row { display: flex; gap: 20px; margin-top: 10px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
+
+  @media (max-width: 600px) {
+    header { padding: 14px 16px; }
+    .container { padding: 16px; }
+    .upload-zone { padding: 36px 16px; }
+    .chart-wrap { height: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🌡️</div>
+  <div>
+    <h1>Testo 174T — Ölçüm Analiz Sistemi</h1>
+    <p>Soğutma zinciri sıcaklık kayıtlarını yükleyin, otomatik analiz edin</p>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Upload -->
+  <div id="upload-section">
+    <div class="upload-zone" id="drop-zone">
+      <div class="icon">📄</div>
+      <h2>Testo 174T PDF Raporu Yükleyin</h2>
+      <p>Cihazdan dışa aktarılan PDF dosyasını sürükleyin veya seçin</p>
+      <label class="btn-upload" for="file-input">Dosya Seç</label>
+      <input type="file" id="file-input" accept=".pdf">
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p style="color:var(--text-muted)">PDF analiz ediliyor…</p>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <button class="btn-reset" id="btn-reset">← Yeni Dosya Yükle</button>
+
+    <!-- Assessment -->
+    <div class="assessment" id="assessment-banner">
+      <span class="badge" id="assessment-badge"></span>
+      <span class="msg" id="assessment-msg"></span>
+    </div>
+
+    <!-- Device Info -->
+    <div class="info-grid" id="info-grid"></div>
+
+    <!-- Stats -->
+    <div class="stats-grid" id="stats-grid"></div>
+
+    <!-- Chart -->
+    <div class="chart-card">
+      <h3 id="chart-title">Sıcaklık Trendi</h3>
+      <div class="chart-wrap"><canvas id="temp-chart"></canvas></div>
+      <div class="legend-row" id="legend-row"></div>
+    </div>
+
+    <div class="section-divider"></div>
+
+    <!-- Critical Faults -->
+    <div class="events-section" id="faults-section">
+      <h3>🔴 Kritik Arızalar</h3>
+      <div class="event-list" id="faults-list"></div>
+    </div>
+
+    <!-- Warnings -->
+    <div class="events-section" id="warnings-section">
+      <h3>⚠️ Uyarılar</h3>
+      <div class="event-list" id="warnings-list"></div>
+    </div>
+
+    <!-- Info -->
+    <div class="events-section" id="info-section">
+      <h3>ℹ️ Bilgi</h3>
+      <div class="event-list" id="info-list"></div>
+    </div>
+
+  </div><!-- /results -->
+</div>
+
+<script>
+let chartInstance = null;
+
+const $ = id => document.getElementById(id);
+
+// Drag & drop
+const dropZone = $('drop-zone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+$('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) uploadFile(e.target.files[0]);
+});
+$('btn-reset').addEventListener('click', () => {
+  $('results').style.display = 'none';
+  $('upload-section').style.display = 'block';
+  $('file-input').value = '';
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+});
+
+async function uploadFile(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  $('upload-section').style.display = 'none';
+  $('loading').style.display = 'block';
+  $('results').style.display = 'none';
+
+  try {
+    const res = await fetch('/analyze', { method: 'POST', body: fd });
+    const data = await res.json();
+    $('loading').style.display = 'none';
+    if (data.error) { alert('Hata: ' + data.error); $('upload-section').style.display = 'block'; return; }
+    renderResults(data);
+  } catch (err) {
+    $('loading').style.display = 'none';
+    alert('Bağlantı hatası: ' + err.message);
+    $('upload-section').style.display = 'block';
+  }
+}
+
+function renderResults(d) {
+  // Assessment
+  const banner = $('assessment-banner');
+  banner.className = 'assessment ' + d.assessment.status;
+  $('assessment-badge').textContent = d.assessment.label;
+  $('assessment-msg').textContent = d.assessment.message;
+
+  // Info grid
+  const h = d.header;
+  const cfg = d.device_config;
+  $('info-grid').innerHTML = [
+    { label: 'Cihaz Türü', value: cfg.name },
+    { label: 'Cihaz Adı', value: h.device_name || '—' },
+    { label: 'Seri No', value: h.serial || '—' },
+    { label: 'Ölçüm Başlangıcı', value: h.start_time || '—' },
+    { label: 'Ölçüm Bitişi', value: h.end_time || '—' },
+    { label: 'Toplam Ölçüm', value: (d.stats.total_readings + ' kayıt') },
+  ].map(x => `
+    <div class="info-card">
+      <div class="label">${x.label}</div>
+      <div class="value">${x.value}</div>
+    </div>
+  `).join('');
+
+  // Stats grid
+  const s = d.stats;
+  const inRange = val => val >= cfg.normal_min && val <= cfg.normal_max;
+  $('stats-grid').innerHTML = [
+    { label: 'Min Sıcaklık', value: s.stable_min, color: inRange(s.stable_min) ? 'var(--ok)' : 'var(--crit)' },
+    { label: 'Max Sıcaklık', value: s.stable_max, color: inRange(s.stable_max) ? 'var(--ok)' : 'var(--crit)' },
+    { label: 'Ortalama', value: s.stable_avg, color: inRange(s.stable_avg) ? 'var(--ok)' : 'var(--warn)' },
+    { label: 'Std Sapma', value: s.stable_stdev, color: 'var(--text)' },
+    { label: 'Döngü Süresi', value: s.avg_cycle_min ? s.avg_cycle_min + ' dk' : '—', color: 'var(--text)', noUnit: true },
+    { label: 'Tespit Edilen Döngü', value: s.peaks_detected, color: 'var(--text)', noUnit: true },
+  ].map(x => `
+    <div class="stat-card">
+      <div class="stat-label">${x.label}</div>
+      <div class="stat-value" style="color:${x.color}">${x.noUnit ? x.value : x.value}</div>
+      ${(!x.noUnit && typeof x.value === 'number') ? '<div class="stat-unit">°C</div>' : ''}
+    </div>
+  `).join('');
+
+  // Chart
+  if (chartInstance) chartInstance.destroy();
+  const labels = d.records.map(r => r.datetime_display.slice(11, 16)); // HH:MM
+  const temps  = d.records.map(r => r.temperature);
+  const color  = cfg.color;
+
+  // Mark anomalies on chart
+  const pointColors = d.records.map(r => {
+    const isFault = d.faults.some(f => f.record_id === r.id);
+    const isWarn  = d.warnings.some(w => w.record_id === r.id);
+    if (isFault) return '#ef4444';
+    if (isWarn)  return '#f59e0b';
+    return color;
+  });
+  const pointRadius = d.records.map(r => {
+    const isFault = d.faults.some(f => f.record_id === r.id);
+    const isWarn  = d.warnings.some(w => w.record_id === r.id);
+    return (isFault || isWarn) ? 6 : 3;
+  });
+
+  const ctx = $('temp-chart').getContext('2d');
+  chartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Sıcaklık (°C)',
+        data: temps,
+        borderColor: color,
+        backgroundColor: cfg.bg_color,
+        borderWidth: 2,
+        pointBackgroundColor: pointColors,
+        pointRadius: pointRadius,
+        fill: true,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => d.records[items[0].dataIndex]?.datetime_display || '',
+            label: (item) => ` ${item.parsed.y.toFixed(1)} °C`,
+          },
+        },
+        annotation: undefined,
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,.05)' },
+          ticks: { color: '#94a3b8', maxTicksLimit: 12, maxRotation: 0 },
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,.05)' },
+          ticks: { color: '#94a3b8', callback: v => v + '°C' },
+        },
+      },
+    },
+  });
+
+  $('chart-title').textContent = `Sıcaklık Trendi — ${cfg.name} (${d.stats.total_readings} ölçüm)`;
+
+  // Legend
+  $('legend-row').innerHTML = `
+    <div class="legend-item"><div class="legend-dot" style="background:${color}"></div> Normal ölçüm</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div> Uyarı noktası</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> Kritik nokta</div>
+    <div class="legend-item" style="margin-left:auto;font-size:11px;">Normal Aralık: ${cfg.normal_min}°C — ${cfg.normal_max}°C</div>
+  `;
+
+  // Events
+  renderEventList('faults-list', 'faults-section', d.faults, 'Kritik arıza tespit edilmedi.');
+  renderEventList('warnings-list', 'warnings-section', d.warnings, 'Uyarı mevcut değil.');
+  renderEventList('info-list', 'info-section', d.info_events, '');
+
+  if (!d.info_events.length) $('info-section').style.display = 'none';
+  else $('info-section').style.display = 'block';
+
+  $('results').style.display = 'block';
+  $('results').scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderEventList(listId, sectionId, events, emptyMsg) {
+  const list = $(listId);
+  if (!events.length) {
+    list.innerHTML = emptyMsg
+      ? `<div class="empty-state">${emptyMsg}</div>`
+      : '';
+    return;
+  }
+  list.innerHTML = events.map(ev => `
+    <div class="event-item ${ev.severity}">
+      <div class="event-icon">${ev.icon}</div>
+      <div class="event-body">
+        <div class="event-title">${ev.title}</div>
+        <div class="event-desc">${ev.description}</div>
+        <div class="event-meta">
+          ${ev.time ? '⏱ ' + ev.time : ''}
+          ${ev.record_id ? ' · Kayıt #' + ev.record_id : ''}
+          ${ev.value !== undefined ? ' · ' + ev.value + '°C' : ''}
+        </div>
+      </div>
+      <span class="event-badge ${ev.severity}">${ev.severity === 'CRITICAL' ? 'KRİTİK' : ev.severity === 'WARNING' ? 'UYARI' : 'BİLGİ'}</span>
+    </div>
+  `).join('');
+}
+</script>
+</body>
+</html>
