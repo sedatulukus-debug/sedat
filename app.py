@@ -1,12 +1,21 @@
 import io
+import os
 import re
+import json
+import uuid
 import statistics
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 import pdfplumber
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
+
+# ─── Knowledge base dizini ──────────────────────────────────────────────────
+KB_DIR        = os.path.join(os.path.dirname(__file__), 'knowledge_base')
+KB_INDEX_FILE = os.path.join(KB_DIR, 'index.json')
+os.makedirs(KB_DIR, exist_ok=True)
+
 
 # ─── Cihaz konfigürasyonu (teknik belgelerden) ─────────────────────────────
 # Kaynak: DataServices.pdf — çalışma prensipleri
@@ -742,6 +751,100 @@ def build_recommendations(faults, warnings, device_type, stats):
     return recs
 
 
+# ─── Knowledge Base ─────────────────────────────────────────────────────────
+def kb_load_index():
+    if not os.path.exists(KB_INDEX_FILE):
+        return []
+    with open(KB_INDEX_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def kb_save_index(index):
+    with open(KB_INDEX_FILE, 'w', encoding='utf-8') as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+def kb_extract_text(file_bytes):
+    parts = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                parts.append(t)
+    return '\n'.join(parts)
+
+# Arıza türüne göre arama terimleri
+_FAULT_TERMS = {
+    'Sıcaklık': ['kompresör', 'termostat', 'soğutma', 'soğutucu', 'sıcaklık'],
+    'Isınma':   ['gaz', 'kaçak', 'tıkanma', 'kompresör', 'sistem'],
+    'Kapı':     ['kapı', 'conta', 'kauçuk', 'switch', 'menteşe'],
+    'Buzlanma': ['defrost', 'ısıtıcı', 'termi', 'evaporatör'],
+    'Döngü':    ['kompresör', 'termostat', 'kontrol', 'kart'],
+    'Fan':      ['fan', 'motor', 'pervane', 'hava'],
+    'Gaz':      ['gaz', 'kaçak', 'dolum', 'sistem', 'boru'],
+    'Defrost':  ['defrost', 'çözünme', 'ısıtıcı', 'sensör'],
+}
+
+def kb_search(faults, warnings, device_type):
+    """Aktif arızalara göre knowledge base'den ilgili pasajları getirir."""
+    index = kb_load_index()
+    if not index:
+        return []
+
+    # Aktif arızalardan arama terimi seti oluştur
+    query_terms = set()
+    for ev in faults + warnings:
+        title = ev.get('title', '')
+        for key, terms in _FAULT_TERMS.items():
+            if key in title:
+                query_terms.update(terms)
+    if device_type == 'FRZ':
+        query_terms.update(['freezer', 'dondurucu', 'derin'])
+    else:
+        query_terms.update(['soğutucu', 'buzdolabı', 'fresh'])
+
+    if not query_terms:
+        return []
+
+    results = []
+    for meta in index:
+        doc_file = os.path.join(KB_DIR, meta['id'] + '.json')
+        if not os.path.exists(doc_file):
+            continue
+        with open(doc_file, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+        text = doc.get('text', '')
+        text_lower = text.lower()
+
+        matched = [t for t in query_terms if t in text_lower]
+        if not matched:
+            continue
+
+        # Her eşleşen terim için cümle kesiti al
+        snippets = []
+        seen = set()
+        for term in matched[:4]:
+            idx = text_lower.find(term)
+            while idx >= 0 and len(snippets) < 3:
+                # Cümle sınırlarını bul
+                s = text.rfind('\n', 0, idx)
+                s = s + 1 if s >= 0 else max(0, idx - 80)
+                e = text.find('\n', idx + len(term))
+                e = e if e >= 0 else min(len(text), idx + 250)
+                snippet = text[s:e].strip()
+                if len(snippet) > 20 and snippet not in seen:
+                    seen.add(snippet)
+                    snippets.append(snippet)
+                idx = text_lower.find(term, idx + 1)
+
+        if snippets:
+            results.append({
+                'doc_name': meta['name'],
+                'snippets': snippets[:2],
+                'matched_terms': list(matched[:5]),
+            })
+
+    return results[:4]  # en fazla 4 doküman referansı
+
+
 # ─── Flask Route'ları ────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -776,22 +879,78 @@ def analyze():
     stats        = calculate_stats(records, stable_start, stable_end)
     assessment   = overall_assessment(faults, warnings, device_type, stats)
     recs         = build_recommendations(faults, warnings, device_type, stats)
+    kb_refs      = kb_search(faults, warnings, device_type)
 
     return jsonify({
-        'header':        header_info,
-        'records':       records,
-        'device_type':   device_type,
-        'device_config': DEVICE_CONFIG[device_type],
-        'stable_start':  stable_start,
-        'stable_end':    stable_end,
-        'stats':         stats,
-        'faults':        faults,
-        'warnings':      warnings,
-        'info_events':   info_events,
-        'assessment':    assessment,
+        'header':          header_info,
+        'records':         records,
+        'device_type':     device_type,
+        'device_config':   DEVICE_CONFIG[device_type],
+        'stable_start':    stable_start,
+        'stable_end':      stable_end,
+        'stats':           stats,
+        'faults':          faults,
+        'warnings':        warnings,
+        'info_events':     info_events,
+        'assessment':      assessment,
         'recommendations': recs,
-        'error_codes':   ERROR_CODES,
+        'error_codes':     ERROR_CODES,
+        'kb_references':   kb_refs,
     })
+
+
+# ─── Knowledge base rotaları ─────────────────────────────────────────────────
+@app.route('/documents', methods=['GET'])
+def list_documents():
+    return jsonify(kb_load_index())
+
+
+@app.route('/upload-doc', methods=['POST'])
+def upload_document():
+    if 'file' not in request.files:
+        return jsonify({'error': 'Dosya seçilmedi'}), 400
+    f = request.files['file']
+    if not f.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'Yalnızca PDF kabul edilir'}), 400
+    file_bytes = f.read()
+    if not file_bytes:
+        return jsonify({'error': 'Dosya boş'}), 400
+
+    try:
+        text = kb_extract_text(file_bytes)
+    except Exception as e:
+        return jsonify({'error': f'PDF okunamadı: {str(e)}'}), 400
+
+    if not text.strip():
+        return jsonify({'error': 'PDF içinde çıkarılabilir metin bulunamadı (görsel tabanlı PDF)'}), 400
+
+    doc_id   = 'doc_' + uuid.uuid4().hex[:8]
+    uploaded = datetime.now().isoformat()
+
+    with open(os.path.join(KB_DIR, doc_id + '.json'), 'w', encoding='utf-8') as fp:
+        json.dump({'id': doc_id, 'name': f.filename, 'text': text, 'uploaded': uploaded},
+                  fp, ensure_ascii=False, indent=2)
+
+    index = kb_load_index()
+    index.append({'id': doc_id, 'name': f.filename,
+                  'uploaded': uploaded, 'text_length': len(text)})
+    kb_save_index(index)
+
+    return jsonify({'id': doc_id, 'name': f.filename,
+                    'text_length': len(text), 'uploaded': uploaded})
+
+
+@app.route('/documents/<doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    index = kb_load_index()
+    new_index = [d for d in index if d['id'] != doc_id]
+    if len(new_index) == len(index):
+        return jsonify({'error': 'Doküman bulunamadı'}), 404
+    kb_save_index(new_index)
+    doc_file = os.path.join(KB_DIR, doc_id + '.json')
+    if os.path.exists(doc_file):
+        os.remove(doc_file)
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':
