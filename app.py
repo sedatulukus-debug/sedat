@@ -49,13 +49,13 @@ DEVICE_CONFIG = {
     },
     'FRZ': {
         'name': 'Dondurucu Bölme',
-        'normal_min': -25.0,
-        'normal_max': -12.0,
+        'normal_min': -28.0,
+        'normal_max': -10.0,
         'ideal_min': -22.0,
-        'ideal_max': -15.0,
+        'ideal_max': -16.0,
         'door_open_threshold': 3.5,
-        'cooldown_threshold': -12.0,
-        'defrost_indicator': -10.0,   # Bu değer üstü → defrost olabilir
+        'cooldown_threshold': -10.0,
+        'defrost_indicator': -8.0,    # Bu değer üstü → defrost (evap. havası -8°C üstüne çıkabilir)
         'min_compressor_on_min': 5,
         'min_compressor_off_min': 6,
         'color': '#8e44ad',
@@ -181,8 +181,8 @@ def find_stable_start(records, device_type):
 def find_stable_end(records, device_type):
     """
     Ölçümün sonundaki 'cihaz dolap dışına çıkarıldı' periyodunu tespit eder.
-    Son okuma normal_max üstündeyse ve normal aralığa geri dönmemişse,
-    bu bölümü analiz dışı bırakır.
+    FRZ: oda sıcaklığına (>0°C) çıkma = cihaz dışarıda; defrost piklerini (-8°C civarı) karıştırma.
+    FF:  normal_max üstü + geri dönmeme = cihaz dışarıda.
     """
     cfg = DEVICE_CONFIG[device_type]
     temps = [r['temperature'] for r in records]
@@ -191,24 +191,24 @@ def find_stable_end(records, device_type):
     if n < 6:
         return n
 
-    # Son okuma normal aralıktaysa kırpma yok
-    if temps[-1] <= cfg['normal_max']:
+    # FRZ için çıkarılma eşiği: 0°C — defrost piklerini (genellikle -8°C..) kapsamaz
+    removal_threshold = 0.0 if device_type == 'FRZ' else cfg['normal_max']
+
+    if temps[-1] <= removal_threshold:
         return n
 
-    # Sondan geriye doğru en son normal-aralık okumasını bul
     last_normal_i = -1
     for i in range(n - 1, n // 2, -1):
-        if temps[i] <= cfg['normal_max']:
+        if temps[i] <= removal_threshold:
             last_normal_i = i
             break
 
     if last_normal_i < 0:
-        return n  # Ölçümün yarısından fazlası yüksek → kırpma yapmıyoruz
+        return n
 
     tail_len  = n - 1 - last_normal_i
     tail_rise = temps[-1] - temps[last_normal_i]
 
-    # En az 2 okuma yüksek + anlamlı yükseliş → cihaz çıkarıldı
     if tail_len >= 2 and tail_rise >= cfg['door_open_threshold'] * 2:
         return last_normal_i + 1
 
@@ -376,8 +376,12 @@ def analyze_faults(records, device_type, stable_start, stable_end=None):
 
     # --- Defrost tespiti ---
     defrosts = detect_defrost_events(stable, device_type)
+    defrost_indices = set()
     for d in defrosts:
         if d['is_defrost']:
+            # Bu indeksleri yüksek-sıcaklık ihlali kontrolünden hariç tut
+            for j in range(d['start_idx'], min(d['end_idx'] + 1, len(stable))):
+                defrost_indices.add(j)
             info_events.append({
                 'severity': 'INFO',
                 'icon': '🔆',
@@ -407,9 +411,20 @@ def analyze_faults(records, device_type, stable_start, stable_end=None):
                     'value': d['peak'],
                 })
 
-    # --- Üst sınır ihlali — episod bazlı (ardışık ihlaller tek olay) ---
+    # Defrost kayıtlarını geçici etiketle (yüksek sıcaklık ihlali sayılmasin)
+    for j in defrost_indices:
+        stable[j]['_in_defrost'] = True
+
+    # --- Üst sınır ihlali — episod bazlı (defrost periyotları hariç) ---
     stable_temps = [r['temperature'] for r in stable]
-    high_eps = group_episodes(stable, lambda r: r['temperature'] > cfg['normal_max'])
+    high_eps = group_episodes(
+        stable,
+        lambda r: r['temperature'] > cfg['normal_max'] and not r.get('_in_defrost')
+    )
+
+    # Geçici etiketi temizle
+    for r in stable:
+        r.pop('_in_defrost', None)
     if high_eps:
         total_over_min = sum((e - s + 1) * 10 for s, e in high_eps)
         peak_temp = max(
@@ -528,7 +543,7 @@ def analyze_faults(records, device_type, stable_start, stable_end=None):
 
     # --- Evaporatör buzlanması tespiti ---
     if device_type == 'FRZ':
-        very_cold = [t for t in stable_temps if t < -28]
+        very_cold = [t for t in stable_temps if t < cfg['normal_min']]
         if len(very_cold) >= 3:
             faults.append({
                 'severity': 'CRITICAL',
