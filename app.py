@@ -158,6 +158,35 @@ def parse_testo_pdf(file_bytes):
     return header_info, unique
 
 
+# ─── Set sıcaklığına göre cihaz konfigürasyonu ─────────────────────────────
+def compute_device_config(device_type, set_temp):
+    """
+    Kullanıcının girdiği termostat set sıcaklığına göre analiz eşiklerini hesaplar.
+    Tüm normal/ideal/alarm değerleri set değerinden türetilir.
+    """
+    base = dict(DEVICE_CONFIG[device_type])
+    base['set_temp'] = set_temp
+
+    if device_type == 'FF':
+        # Soğutucu: set ±2°C ideal, set+4°C kritik alarm
+        base['ideal_min']          = round(set_temp - 2.0, 1)
+        base['ideal_max']          = round(set_temp + 2.0, 1)
+        base['normal_min']         = round(set_temp - 4.0, 1)   # donma riski
+        base['normal_max']         = round(set_temp + 4.0, 1)   # yüksek sıcaklık alarmı
+        base['cooldown_threshold'] = round(set_temp + 4.0, 1)
+        base['defrost_indicator']  = round(set_temp + 3.0, 1)
+    else:
+        # Dondurucu: set ±3°C ideal, set+8°C ürün güvenliği alarmı
+        base['ideal_min']          = round(set_temp - 3.0, 1)
+        base['ideal_max']          = round(set_temp + 2.0, 1)
+        base['normal_min']         = round(set_temp - 8.0, 1)   # aşırı soğuma
+        base['normal_max']         = round(set_temp + 8.0, 1)   # ürün tehlikede
+        base['cooldown_threshold'] = round(set_temp + 8.0, 1)
+        base['defrost_indicator']  = round(set_temp + 10.0, 1)  # defrost pik eşiği
+
+    return base
+
+
 # ─── Cihaz türü tespiti ─────────────────────────────────────────────────────
 def detect_device_type(records):
     if not records:
@@ -168,9 +197,10 @@ def detect_device_type(records):
 
 
 # ─── Soğuma başlangıcı ──────────────────────────────────────────────────────
-def find_stable_start(records, device_type):
-    threshold = DEVICE_CONFIG[device_type]['cooldown_threshold']
-    # İlk 3 ardışık okuma threshold altında olduğunda stabil başlangıç say
+def find_stable_start(records, device_type, cfg=None):
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
+    threshold = cfg['cooldown_threshold']
     for i, r in enumerate(records):
         if r['temperature'] < threshold:
             return max(0, i)
@@ -178,13 +208,14 @@ def find_stable_start(records, device_type):
 
 
 # ─── Ölçüm sonu: cihaz dolap dışına çıkarıldı ──────────────────────────────
-def find_stable_end(records, device_type):
+def find_stable_end(records, device_type, cfg=None):
     """
     Ölçümün sonundaki 'cihaz dolap dışına çıkarıldı' periyodunu tespit eder.
-    FRZ: oda sıcaklığına (>0°C) çıkma = cihaz dışarıda; defrost piklerini (-8°C civarı) karıştırma.
+    FRZ: oda sıcaklığına (>0°C) çıkma = cihaz dışarıda; defrost piklerini karıştırma.
     FF:  normal_max üstü + geri dönmeme = cihaz dışarıda.
     """
-    cfg = DEVICE_CONFIG[device_type]
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
     temps = [r['temperature'] for r in records]
     n = len(temps)
 
@@ -217,13 +248,13 @@ def find_stable_end(records, device_type):
 # ─── Defrost döngüsü tespiti ────────────────────────────────────────────────
 # Teknik belge: defrost her 12-96 saatte bir, ort. 26 saatte
 # FRZ defrost sonrası evap +4°C'ye, FF evap +10°C'ye ulaşır
-def detect_defrost_events(records, device_type):
+def detect_defrost_events(records, device_type, cfg=None):
     """
     Sıcaklık verisinde defrost döngülerini tespit eder.
     - 3+ ardışık artış + toplam yükseliş belirli eşiği geçmeli
-    - FF: eşik 7°C | FRZ: eşik -10°C
     """
-    cfg = DEVICE_CONFIG[device_type]
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
     defrosts = []
     temps = [r['temperature'] for r in records]
     n = len(temps)
@@ -327,8 +358,9 @@ def group_episodes(records, test_fn, min_duration=2, max_gap=2):
 
 
 
-def analyze_faults(records, device_type, stable_start, stable_end=None):
-    cfg = DEVICE_CONFIG[device_type]
+def analyze_faults(records, device_type, stable_start, stable_end=None, cfg=None):
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
     faults   = []
     warnings = []
     info_events = []
@@ -375,7 +407,7 @@ def analyze_faults(records, device_type, stable_start, stable_end=None):
         return faults, warnings, info_events
 
     # --- Defrost tespiti ---
-    defrosts = detect_defrost_events(stable, device_type)
+    defrosts = detect_defrost_events(stable, device_type, cfg)
     defrost_indices = set()
     for d in defrosts:
         if d['is_defrost']:
@@ -661,8 +693,9 @@ def calculate_stats(records, stable_start, stable_end=None):
 
 
 # ─── Genel değerlendirme ────────────────────────────────────────────────────
-def overall_assessment(faults, warnings, device_type, stats):
-    cfg      = DEVICE_CONFIG[device_type]
+def overall_assessment(faults, warnings, device_type, stats, cfg=None):
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
     in_range = cfg['normal_min'] <= stats['stable_avg'] <= cfg['normal_max']
 
     if faults:
@@ -751,9 +784,10 @@ def kb_driven_steps(faults, warnings, device_type):
 
 
 # ─── Teşhis önerileri ───────────────────────────────────────────────────────
-def build_recommendations(faults, warnings, device_type, stats):
+def build_recommendations(faults, warnings, device_type, stats, cfg=None):
     recs = []
-    cfg  = DEVICE_CONFIG[device_type]
+    if cfg is None:
+        cfg = DEVICE_CONFIG[device_type]
 
     # Sıcaklık çok yüksek
     if any(f['title'].endswith('Alarmı') or 'Isınma' in f['title'] for f in faults):
@@ -962,19 +996,27 @@ def analyze():
 
     device_type_param = request.form.get('device_type', '').strip().upper()
     device_type  = device_type_param if device_type_param in DEVICE_CONFIG else detect_device_type(records)
-    stable_start = find_stable_start(records, device_type)
-    stable_end   = find_stable_end(records, device_type)
-    faults, warnings, info_events = analyze_faults(records, device_type, stable_start, stable_end)
+
+    # Set sıcaklığına göre analiz eşiklerini hesapla
+    try:
+        set_temp = float(request.form.get('set_temp', ''))
+        effective_cfg = compute_device_config(device_type, set_temp)
+    except (ValueError, TypeError):
+        effective_cfg = DEVICE_CONFIG[device_type]
+
+    stable_start = find_stable_start(records, device_type, effective_cfg)
+    stable_end   = find_stable_end(records, device_type, effective_cfg)
+    faults, warnings, info_events = analyze_faults(records, device_type, stable_start, stable_end, effective_cfg)
     stats        = calculate_stats(records, stable_start, stable_end)
-    assessment   = overall_assessment(faults, warnings, device_type, stats)
-    recs         = build_recommendations(faults, warnings, device_type, stats)
-    kb_refs      = []  # KB içeriği artık recommendations içine gömülüdür
+    assessment   = overall_assessment(faults, warnings, device_type, stats, effective_cfg)
+    recs         = build_recommendations(faults, warnings, device_type, stats, effective_cfg)
+    kb_refs      = []
 
     return jsonify({
         'header':          header_info,
         'records':         records,
         'device_type':     device_type,
-        'device_config':   DEVICE_CONFIG[device_type],
+        'device_config':   effective_cfg,
         'stable_start':    stable_start,
         'stable_end':      stable_end,
         'stats':           stats,

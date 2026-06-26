@@ -263,6 +263,22 @@
 
   .kb-loading { display: none; text-align: center; padding: 24px; color: var(--text-muted); font-size: 13px; }
 
+  /* ── Set Temp Input ─────────────────────────────────────────────────── */
+  .set-temp-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; margin-top: 14px;
+  }
+  .set-temp-label { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .set-temp-input-wrap { display: flex; align-items: center; gap: 4px; }
+  .set-temp-input {
+    width: 80px; padding: 8px 10px; border: 2px solid var(--border);
+    border-radius: 8px; font-size: 16px; font-weight: 700;
+    text-align: center; color: var(--text); background: var(--surface);
+    outline: none; transition: border-color .2s;
+  }
+  .set-temp-input:focus { border-color: var(--accent); }
+  .set-temp-unit { font-size: 16px; font-weight: 700; color: var(--text-muted); }
+
   /* ── Device Type Selector ────────────────────────────────────────────── */
   .device-selector { margin-top: 22px; text-align: center; }
   .device-selector-label { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
@@ -342,6 +358,16 @@
               <span class="device-opt-icon">❄️</span>Dondurucu Bölme
             </span>
           </label>
+        </div>
+      </div>
+
+      <!-- Set sıcaklığı -->
+      <div class="set-temp-row">
+        <span class="set-temp-label">Termostat Set Sıcaklığı:</span>
+        <div class="set-temp-input-wrap">
+          <input type="number" id="set-temp-input" class="set-temp-input"
+                 value="4" min="-30" max="15" step="1">
+          <span class="set-temp-unit">°C</span>
         </div>
       </div>
 
@@ -455,6 +481,18 @@ function switchTab(name) {
   if (name === 'docs') loadDocuments();
 }
 
+/* ── Set temp default update on device type change ─────────────────────── */
+document.querySelectorAll('input[name="device-type"]').forEach(radio => {
+  radio.addEventListener('change', function () {
+    const inp = $('set-temp-input');
+    if (this.value === 'FRZ') {
+      inp.value = -18; inp.min = -30; inp.max = -10;
+    } else {
+      inp.value = 4;   inp.min = -5;  inp.max = 15;
+    }
+  });
+});
+
 /* ── Analiz upload ──────────────────────────────────────────────────────── */
 const dropZone = $('drop-zone');
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
@@ -476,6 +514,8 @@ async function uploadFile(file) {
   fd.append('file', file);
   const selType = document.querySelector('input[name="device-type"]:checked');
   if (selType) fd.append('device_type', selType.value);
+  const setTempVal = $('set-temp-input')?.value;
+  if (setTempVal !== undefined && setTempVal !== '') fd.append('set_temp', setTempVal);
   $('upload-section').style.display = 'none';
   $('loading').style.display = 'block';
   $('results').style.display = 'none';
@@ -500,8 +540,12 @@ function renderResults(d) {
   $('assessment-msg').textContent   = d.assessment.message;
 
   const h = d.header, cfg = d.device_config;
+  const setTempLabel = cfg.set_temp !== undefined ? cfg.set_temp + '°C' : '—';
+  const rangeLabel   = cfg.normal_min + '°C – ' + cfg.normal_max + '°C';
   $('info-grid').innerHTML = [
-    { label: 'Cihaz Türü',        value: cfg.name },
+    { label: 'Cihaz Bölmesi',     value: cfg.name },
+    { label: 'Set Sıcaklığı',     value: setTempLabel },
+    { label: 'Normal Aralık',     value: rangeLabel },
     { label: 'Kanal',             value: h.channel_name || '—' },
     { label: 'Ölçüm Başlangıcı', value: h.start_time   || '—' },
     { label: 'Ölçüm Bitişi',     value: h.end_time     || '—' },
